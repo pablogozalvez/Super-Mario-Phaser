@@ -1,14 +1,15 @@
 const loadingGif = document.querySelectorAll('.loading-gif');
-
 const mobileDevice = isMobileDevice();
-
 const screenWidth = window.innerWidth;
 const screenHeight = window.innerHeight * 1.1;
-
 const velocityX = screenWidth / 4.5;
 const velocityY = screenHeight / 1.15;
-
 const levelGravity = velocityY * 2;
+const worldWidth = screenWidth * 11;
+const platformHeight = screenHeight / 5;
+const startOffset = screenWidth / 2.5;
+const platformPieces = 100;
+const platformPiecesWidth = (worldWidth - screenWidth) / platformPieces;
 
 var config = {
     type: Phaser.AUTO,
@@ -33,32 +34,24 @@ var config = {
     version: '0.7.3'
 };
 
-const worldWidth = screenWidth * 11;
-const platformHeight = screenHeight / 5;
-
-const startOffset = screenWidth / 2.5;
-
-// Hole with is calculated dividing the world width in x holes of the same size.
-const platformPieces = 100;
-const platformPiecesWidth = (worldWidth - screenWidth) / platformPieces;
-
 var isLevelOverworld;
-
-// Create empty holes array, every hole will have their object with the hole start and end
 var worldHolesCoords = [];
-
 var emptyBlocksList = [];
-
-var player;
-var playerController;
+var player, playerController;
 var playerState = 0;
 var playerInvulnerable = false;
 var playerBlocked = false;
 var playerFiring = false;
 var fireInCooldown = false;
 var furthestPlayerPos = 0;
-
 var flagRaised = false;
+var score = 0;
+var timeLeft = 300;
+var levelStarted = false;
+var reachedLevelEnd = false;
+var smoothedControls;
+var gameOver = false;
+var gameWinned = false;
 
 var controlKeys = {
     JUMP: null,
@@ -67,68 +60,93 @@ var controlKeys = {
     RIGHT: null,
     FIRE: null,
     PAUSE: null
-
 };
-
-var score = 0;
-var timeLeft = 300;
-
-var levelStarted = false;
-var reachedLevelEnd = false;
-
-var smoothedControls;
-var gameOver = false;
-var gameWinned = false;
 
 var game = new Phaser.Game(config);
 
+// ======================
+// FUNGSI UTILITAS
+// ======================
 function isMobileDevice() {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 }
 
-// Source: https://github.com/photonstorm/phaser3-examples/blob/master/public/src/tilemap/collision/matter%20destroy%20tile%20bodies.js#L35
+function generateRandomCoordinate(entitie = false, ground = true) {
+    const startPos = entitie ? screenWidth * 1.5 : screenWidth;
+    const endPos = entitie ? worldWidth - screenWidth * 3 : worldWidth;
+  
+    let coordinate = Phaser.Math.Between(startPos, endPos);
+  
+    if (!ground) return coordinate;
+  
+    for (let hole of worldHolesCoords) {
+      if (coordinate >= hole.start - platformPiecesWidth * 1.5 && coordinate <= hole.end) {
+        return generateRandomCoordinate.call(this, entitie, ground);
+      }
+    }
+  
+    return coordinate;
+}
 
-var SmoothedHorionztalControl = new Phaser.Class({
+function addToScore(points, entity) {
+    score += points;
+    if (this.scoreText) this.scoreText.setText('SCORE: ' + score);
+}
 
-    initialize:
+function applyPlayerInvulnerability(duration) {
+    playerInvulnerable = true;
+    player.setTint(0xff0000);
+    setTimeout(() => {
+        playerInvulnerable = false;
+        player.clearTint();
+    }, duration);
+}
 
-    function SmoothedHorionztalControl(speed) {
-            this.msSpeed = speed;
-            this.value = 0;
-    },
-
-    moveLeft: function(delta) {
-        if (this.value > 0) { this.reset(); }
-        this.value -= this.msSpeed * 3.5;
-        if (this.value < -1) { this.value = -1; }
-        playerController.time.rightDown += delta;
-    },
-
-    moveRight: function(delta) {
-        if (this.value < 0) { this.reset(); }
-        this.value += this.msSpeed * 3.5;
-        if (this.value > 1) { this.value = 1; }
-        playerController.time.leftDown += delta;
-    },
-
-    reset: function() {
+// ======================
+// KELAS KONTROL
+// ======================
+class SmoothedHorionztalControl {
+    constructor(speed) {
+        this.msSpeed = speed;
         this.value = 0;
     }
-});
+
+    moveLeft(delta) {
+        if (this.value > 0) this.reset();
+        this.value -= this.msSpeed * 3.5;
+        if (this.value < -1) this.value = -1;
+        playerController.time.rightDown += delta;
+    }
+
+    moveRight(delta) {
+        if (this.value < 0) this.reset();
+        this.value += this.msSpeed * 3.5;
+        if (this.value > 1) this.value = 1;
+        playerController.time.leftDown += delta;
+    }
+
+    reset() {
+        this.value = 0;
+    }
+}
+
 
 function preload() {
+    setupLoadingScreen.call(this);
+    loadFontsAndPlugins.call(this);
+    determineLevelStyle.call(this);
+    loadGameAssets.call(this);
+}
 
+function setupLoadingScreen() {
     var progressBox = this.add.graphics();
     var progressBar = this.add.graphics();
     progressBox.fillStyle(0x222222, 1);
     progressBox.fillRoundedRect(screenWidth / 2.48, screenHeight / 2 * 1.05, screenWidth / 5.3, screenHeight / 20.7, 10);
     
-    var width = this.cameras.main.width;
-    var height = this.cameras.main.height;
-    
     var percentText = this.make.text({
-        x: width / 2,
-        y: height / 2 * 1.25,
+        x: screenWidth / 2,
+        y: screenHeight / 2 * 1.25,
         text: '0%',
         style: {
             font: screenWidth / 96 + 'px pixel_nums',
@@ -150,32 +168,42 @@ function preload() {
         percentText.destroy();
         loadingGif.forEach(gif => {gif.style.display = 'none';});
     });
+}
 
-    // Load Fonts
+function loadFontsAndPlugins() {
     this.load.bitmapFont('carrier_command', 'assets/fonts/carrier_command.png', 'assets/fonts/carrier_command.xml');
-
-    // Load plugins
     this.load.plugin('rexvirtualjoystickplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexvirtualjoystickplugin.min.js', true);
     this.load.plugin('rexcheckboxplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexcheckboxplugin.min.js', true);
     this.load.plugin('rexsliderplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexsliderplugin.min.js', true);
     this.load.plugin('rexkawaseblurpipelineplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexkawaseblurpipelineplugin.min.js', true);
+}
 
+function determineLevelStyle() {
     isLevelOverworld = Phaser.Math.Between(0, 100) <= 84;
+}
 
+function loadGameAssets() {
+    loadCharacterSprites.call(this);
+    loadEnvironmentAssets.call(this);
+    loadAudioAssets.call(this);
+}
+
+function loadCharacterSprites() {
     let levelStyle = isLevelOverworld ? 'overworld' : 'underground';
-
-    // Load entities sprites
+    
     this.load.spritesheet('mario', 'assets/entities/mario.png', { frameWidth: 18, frameHeight: 16 });
     this.load.spritesheet('mario-grown', 'assets/entities/mario-grown.png', { frameWidth: 18, frameHeight: 32 });
     this.load.spritesheet('mario-fire', 'assets/entities/mario-fire.png', { frameWidth: 18, frameHeight: 32 });
     this.load.spritesheet('goomba', 'assets/entities/' + levelStyle + '/goomba.png', { frameWidth: 16, frameHeight: 16 });
     this.load.spritesheet('koopa', 'assets/entities/koopa.png', { frameWidth: 16, frameHeight: 24 });
     this.load.spritesheet('shell', 'assets/entities/shell.png', { frameWidth: 16, frameHeight: 15 });
-
-    // Load objects sprites
     this.load.spritesheet('fireball', 'assets/entities/fireball.png', { frameWidth: 8, frameHeight: 8 });
     this.load.spritesheet('fireball-explosion', 'assets/entities/fireball-explosion.png', { frameWidth: 16, frameHeight: 16 });
+}
 
+function loadEnvironmentAssets() {
+    let levelStyle = isLevelOverworld ? 'overworld' : 'underground';
+    
     // Load props
     this.load.image('cloud1', 'assets/scenery/overworld/cloud1.png');
     this.load.image('cloud2', 'assets/scenery/overworld/cloud2.png');
@@ -196,12 +224,10 @@ function preload() {
     this.load.image('vertical-small-tube', 'assets/scenery/vertical-small-tube.png');
     this.load.image('vertical-medium-tube', 'assets/scenery/vertical-medium-tube.png');
     this.load.image('vertical-large-tube', 'assets/scenery/vertical-large-tube.png');
-
     
     // Load HUD images
     this.load.image('gear', 'assets/hud/gear.png');
     this.load.image('settings-bubble', 'assets/hud/settings-bubble.png');
-
     this.load.spritesheet('npc', 'assets/hud/npc.png', { frameWidth: 16, frameHeight: 24 });
 
     // Load platform bricks and structures
@@ -221,9 +247,11 @@ function preload() {
     this.load.spritesheet('fire-flower', 'assets/collectibles/' + levelStyle + '/fire-flower.png', { frameWidth: 16, frameHeight: 16 });
     this.load.image('live-mushroom', 'assets/collectibles/live-mushroom.png');
     this.load.image('super-mushroom', 'assets/collectibles/super-mushroom.png');
+}
 
-
-    // Load sounds and music
+function loadAudioAssets() {
+    let levelStyle = isLevelOverworld ? 'overworld' : 'underground';
+    
     this.load.audio('music', 'assets/sound/music/overworld/theme.mp3');
     this.load.audio('underground-music', 'assets/sound/music/underground/theme.mp3');
     this.load.audio('hurry-up-music', 'assets/sound/music/' + levelStyle +'/hurry-up-theme.mp3');
@@ -246,9 +274,13 @@ function preload() {
 }
 
 function initSounds() {
-    this.musicGroup = this.add.group();
-    this.effectsGroup = this.add.group();
+    initializeMusicGroup.call(this);
+    initializeSoundEffects.call(this);
+}
 
+function initializeMusicGroup() {
+    this.musicGroup = this.add.group();
+    
     this.musicTheme = this.sound.add('music', { volume: 0.15 });
     this.musicTheme.play({ loop: -1 });
     this.musicGroup.add(this.musicTheme);
@@ -264,6 +296,10 @@ function initSounds() {
         
     this.winSound = this.sound.add('win', { volume: 0.3 });
     this.musicGroup.add(this.winSound);
+}
+
+function initializeSoundEffects() {
+    this.effectsGroup = this.add.group();
 
     this.jumpSound = this.sound.add('jumpsound', { volume: 0.10 });
     this.effectsGroup.add(this.jumpSound);
@@ -308,7 +344,194 @@ function initSounds() {
     this.effectsGroup.add(this.breakBlockSound);
 }
 
-function create() {
+// ======================
+// ANIMASI
+// ======================
+function createAnimations() {
+    createPlayerAnimations.call(this);
+    createEnemyAnimations.call(this);
+    createEffectAnimations.call(this);
+    createBlockAnimations.call(this);
+}
+
+function createPlayerAnimations() {
+    this.anims.create({
+        key: 'idle',
+        frames: this.anims.generateFrameNumbers('mario', { start: 0, end: 0 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'run',
+        frames: this.anims.generateFrameNumbers('mario', { start: 1, end: 2 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'jump',
+        frames: this.anims.generateFrameNumbers('mario', { start: 3, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'grown-mario-idle',
+        frames: this.anims.generateFrameNumbers('mario-grown', { start: 0, end: 0 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'grown-mario-run',
+        frames: this.anims.generateFrameNumbers('mario-grown', { start: 1, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'grown-mario-jump',
+        frames: this.anims.generateFrameNumbers('mario-grown', { start: 4, end: 4 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'fire-mario-idle',
+        frames: this.anims.generateFrameNumbers('mario-fire', { start: 0, end: 0 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'fire-mario-run',
+        frames: this.anims.generateFrameNumbers('mario-fire', { start: 1, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'fire-mario-jump',
+        frames: this.anims.generateFrameNumbers('mario-fire', { start: 4, end: 4 }),
+        frameRate: 10,
+        repeat: -1
+    });
+}
+
+function createEnemyAnimations() {
+    this.anims.create({
+        key: 'goomba-walk',
+        frames: this.anims.generateFrameNumbers('goomba', { start: 0, end: 1 }),
+        frameRate: 5,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'goomba-dead',
+        frames: this.anims.generateFrameNumbers('goomba', { start: 2, end: 2 }),
+        frameRate: 5,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'koopa-walk',
+        frames: this.anims.generateFrameNumbers('koopa', { start: 0, end: 1 }),
+        frameRate: 5,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'koopa-hide',
+        frames: this.anims.generateFrameNumbers('koopa', { start: 2, end: 2 }),
+        frameRate: 5,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'npc-default',
+        frames: this.anims.generateFrameNumbers('npc', { start: 0, end: 1 }),
+        frameRate: 3,
+        repeat: -1
+    });
+}
+
+function createEffectAnimations() {
+    this.anims.create({
+        key: 'fireball-default',
+        frames: this.anims.generateFrameNumbers('fireball', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'fireball-explosion',
+        frames: this.anims.generateFrameNumbers('fireball-explosion', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: 0
+    });
+
+    this.anims.create({
+        key: 'brick-debris',
+        frames: this.anims.generateFrameNumbers('brick-debris', { start: 0, end: 3 }),
+        frameRate: 15,
+        repeat: 0
+    });
+
+    this.anims.create({
+        key: 'coin-default',
+        frames: this.anims.generateFrameNumbers('coin', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'ground-coin-default',
+        frames: this.anims.generateFrameNumbers('ground-coin', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'fire-flower-default',
+        frames: this.anims.generateFrameNumbers('fire-flower', { start: 0, end: 3 }),
+        frameRate: 5,
+        repeat: -1
+    });
+}
+
+function createBlockAnimations() {
+    this.anims.create({
+        key: 'mistery-block-default',
+        frames: this.anims.generateFrameNumbers('mistery-block', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'mistery-block-hit',
+        frames: this.anims.generateFrameNumbers('mistery-block', { start: 4, end: 4 }),
+        frameRate: 10,
+        repeat: -1
+    });
+
+    this.anims.create({
+        key: 'custom-block-default',
+        frames: this.anims.generateFrameNumbers('custom-block', { start: 0, end: 3 }),
+        frameRate: 10,
+        repeat: -1
+    });
+}
+
+// ======================
+// PEMBUATAN PLAYER
+// ======================
+function createPlayer() {
+    player = this.physics.add.sprite(screenWidth / 2, screenHeight - platformHeight * 1.5, 'mario');
+    player.setBounce(0);
+    player.setCollideWorldBounds(true);
+    player.body.setSize(14, 16).setOffset(2, 0);
+    
     playerController = {
         time: {
             leftDown: 0,
@@ -321,159 +544,16 @@ function create() {
             run: velocityX,
         }
     };
-
-    this.physics.world.setBounds(0, 0, worldWidth, screenHeight);
-
-    // Create camera
-    this.cameras.main.setBounds(0, 0, worldWidth, screenHeight);
-    this.cameras.main.isFollowing = false;
-    //this.cameras.main.followOffset.set(startOffset / 6, 0);
-
-    initSounds.call(this);
-
-    createAnimations.call(this);
-    createPlayer.call(this);
-    generateLevel.call(this);
-    drawWorld.call(this);
-    drawStartScreen.call(this);
-    createGoombas.call(this);
-    createControls.call(this);
-    applySettings.call(this);
-    
-    smoothedControls = new SmoothedHorionztalControl(0.001);
 }
 
-function createControls() {
-
-    this.joyStick = this.plugins.get('rexvirtualjoystickplugin').add(this, {
-        x: screenWidth * 0.118,
-        y: screenHeight / 1.68,
-        radius: mobileDevice ? 100 : 0,
-        base: this.add.circle(0, 0, mobileDevice ? 75 : 0, 0x0000000, 0.05),
-        thumb: this.add.circle(0, 0, mobileDevice ? 25 : 0, 0xcccccc, 0.2),
-        // dir: '8dir',   // 'up&down'|0|'left&right'|1|'4dir'|2|'8dir'|3
-        // forceMin: 16,
-        // enable: true
-    });
-
-    // Set control keys
-
-    const keyNames = ['JUMP', 'DOWN', 'LEFT', 'RIGHT', 'FIRE', 'PAUSE'];
-    const defaultCodes = [Phaser.Input.Keyboard.KeyCodes.SPACE, Phaser.Input.Keyboard.KeyCodes.S, Phaser.Input.Keyboard.KeyCodes.A, Phaser.Input.Keyboard.KeyCodes.D, Phaser.Input.Keyboard.KeyCodes.Q, Phaser.Input.Keyboard.KeyCodes.ESC];
-    
-    keyNames.forEach((keyName, i) => {
-      const keyCode = localStorage.getItem(keyName) ? Number(localStorage.getItem(keyName)) : defaultCodes[i];
-      controlKeys[keyName] = this.input.keyboard.addKey(keyCode);
-    });
-
-    /*
-    controlKeys.PAUSE.on('down', function () {
-        if (!this.settingsMenuOpen)
-            showSettings.call(this);
-        else
-            hideSettings.call(this);
-    });*/
-}
-
-// This will generate a random coordinate, that can't be within a hole
-
-function generateRandomCoordinate(entitie = false, ground = true) {
-    const startPos = entitie ? screenWidth * 1.5 : screenWidth;
-    const endPos = entitie ? worldWidth - screenWidth * 3 : worldWidth;
-  
-    let coordinate = Phaser.Math.Between(startPos, endPos);
-  
-    if (!ground) return coordinate;
-  
-    for (let hole of worldHolesCoords) {
-      if (coordinate >= hole.start - platformPiecesWidth * 1.5 && coordinate <= hole.end) {
-        return generateRandomCoordinate.call(this, entitie, ground);
-      }
-    }
-  
-    return coordinate;
-  }
-  
-
-// World generation
-
-function drawWorld() {
-    //Drawing scenery props
-
-    //> Drawing the Sky
-    this.add.rectangle(screenWidth, 0,worldWidth, screenHeight, isLevelOverworld ? 0x8585FF : 0x000000).setOrigin(0).depth = -1;
-
-    let propsY = screenHeight - platformHeight;
-
-    if (isLevelOverworld) {
-        //> Clouds
-        for (i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 760), Math.trunc(worldWidth / 380)); i++) {
-            let x = generateRandomCoordinate(false, false);
-            let y = Phaser.Math.Between(screenHeight / 80, screenHeight / 2.2);
-            if (Phaser.Math.Between(0, 10) < 5) {
-                this.add.image(x, y, 'cloud1').setOrigin(0).setScale(screenHeight / 1725);
-            } else {
-                this.add.image(x, y, 'cloud2').setOrigin(0).setScale(screenHeight / 1725);
-            }
-        }
-
-        //> Mountains
-        for (i = 0; i < Phaser.Math.Between(worldWidth / 6400, worldWidth / 3800); i++) {
-            let x = generateRandomCoordinate();
-
-            if (Phaser.Math.Between(0, 10) < 5) {
-                this.add.image(x, propsY, 'mountain1').setOrigin(0, 1).setScale(screenHeight / 517);
-            } else {
-                this.add.image(x, propsY, 'mountain2').setOrigin(0, 1).setScale(screenHeight / 517);
-            }
-        }
-        
-        //> Bushes
-        for (i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 960), Math.trunc(worldWidth / 760)); i++) {
-            let x = generateRandomCoordinate();
-
-            if (Phaser.Math.Between(0, 10) < 5) {
-                this.add.image(x, propsY, 'bush1').setOrigin(0, 1).setScale(screenHeight / 609);
-            } else {
-                this.add.image(x, propsY, 'bush2').setOrigin(0, 1).setScale(screenHeight / 609);
-            }
-        }
-
-        //> Fences
-        for (i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 4000), Math.trunc(worldWidth / 2000)); i++) {
-            let x = generateRandomCoordinate();
-
-            this.add.tileSprite(x, propsY, Phaser.Math.Between(100, 250), 35, 'fence').setOrigin(0, 1).setScale(screenHeight / 863);
-        }
-    }
-
-    //> Final flag
-    this.finalFlagMast = this.add.tileSprite(worldWidth - (worldWidth / 30), propsY, 16, 167, 'flag-mast').setOrigin(0, 1).setScale(screenHeight / 400);
-    this.physics.add.existing(this.finalFlagMast);
-    this.finalFlagMast.immovable = true;
-    this.finalFlagMast.allowGravity = false;
-    this.finalFlagMast.body.setSize(3, 167);
-    this.physics.add.overlap(player, this.finalFlagMast, null, raiseFlag, this);
-    this.physics.add.collider(this.platformGroup.getChildren(), this.finalFlagMast);
-
-    //> Flag
-    this.finalFlag = this.add.image(worldWidth - (worldWidth / 30), propsY * 0.93, 'final-flag').setOrigin(0.5, 1);
-    this.finalFlag.setScale(screenHeight / 400);
-
-    //> Castle
-    this.add.image(worldWidth - (worldWidth / 75), propsY, 'castle').setOrigin(0.5, 1).setScale(screenHeight / 300);
-}
 
 function generateLevel() {
-    //> Creating the platform
+    initializeLevelGroups.call(this);
+    generatePlatform.call(this);
+    setupLevelCollisions.call(this);
+}
 
-    // pieceStart will be the next platform piece start pos. This value will be modified after each execution
-    let pieceStart = screenWidth;
-    // This will tell us if last generated piece of platform was empty, to avoid generating another empty piece next to it.
-    let lastWasHole = 0;
-    // Structures will generate every 2/3 platform pieces
-    let lastWasStructure = 0;
-
+function initializeLevelGroups() {
     this.platformGroup = this.add.group();
     this.fallProtectionGroup = this.add.group();
     this.blocksGroup = this.add.group();
@@ -483,21 +563,23 @@ function generateLevel() {
     this.groundCoinsGroup = this.add.group();
 
     if (!isLevelOverworld) {
-        //this.blocksGroup.add(this.add.tileSprite(worldWidth - screenWidth, screenHeight - (platformHeight * 4.5), screenWidth * 2.9, 16, 'block').setScale(screenHeight / 345).setOrigin(1, 0));
         this.blocksGroup.add(this.add.tileSprite(screenWidth, screenHeight - platformHeight / 1.2, 16, screenHeight - platformHeight, 'block2').setScale(screenHeight / 345).setOrigin(0, 1));
         this.undergroundRoof = this.add.tileSprite(screenWidth * 1.2, screenHeight / 13, worldWidth / 2.68, 16, 'block2').setScale(screenHeight / 345).setOrigin(0);
         this.blocksGroup.add(this.undergroundRoof);
     }
+}
 
-    for (i=0; i <= platformPieces; i++) {
-        // Holes will have a 10% chance of spawning
+function generatePlatform() {
+    let pieceStart = screenWidth;
+    let lastWasHole = 0;
+    let lastWasStructure = 0;
+
+    for (let i = 0; i <= platformPieces; i++) {
         let number = Phaser.Math.Between(0, 100);
 
-        // Check if its not a hole, this means is not that 20%, is not in the spawn safe area and is not close to the end castle.
         if (pieceStart >= (lastWasHole > 0 || lastWasStructure > 0 || worldWidth - platformPiecesWidth * 4) || number <= 0 || pieceStart <= screenWidth * 2 || pieceStart >= worldWidth - screenWidth * 2) {
             lastWasHole--;
 
-            //> Create platform
             let Npiece = this.add.tileSprite(pieceStart, screenHeight, platformPiecesWidth, platformHeight, 'floorbricks').setScale(2).setOrigin(0, 0.5);
             this.physics.add.existing(Npiece);
             Npiece.body.immovable = true;
@@ -505,21 +587,18 @@ function generateLevel() {
             Npiece.isPlatform = true;
             Npiece.depth = 2;
             this.platformGroup.add(Npiece);
-            // Apply player collision with platform
             this.physics.add.collider(player, Npiece);
 
-            //> Creating world structures
-
-            if (!(pieceStart >= (worldWidth - screenWidth * (isLevelOverworld ? 1 : 1.5))) && pieceStart > (screenWidth + platformPiecesWidth * 2) && lastWasHole < 1 && lastWasStructure < 1) {
+            if (!(pieceStart >= (worldWidth - screenWidth * (isLevelOverworld ? 1 : 1.5)))) {
                 lastWasStructure = generateStructure.call(this, pieceStart);
-            }
-            else {
+            } else {
                 lastWasStructure--;
             }
         } else {
-            // Save every hole start and end for later use
-            worldHolesCoords.push({ start: pieceStart, 
-                end: pieceStart + platformPiecesWidth * 2});
+            worldHolesCoords.push({ 
+                start: pieceStart, 
+                end: pieceStart + platformPiecesWidth * 2
+            });
             
             lastWasHole = 2;
             this.fallProtectionGroup.add(this.add.rectangle(pieceStart + platformPiecesWidth * 2, screenHeight - platformHeight, 5, 5).setOrigin(0, 1));
@@ -528,6 +607,117 @@ function generateLevel() {
         pieceStart += platformPiecesWidth * 2;
     }
 
+    createLevelTriggers.call(this);
+}
+
+function generateStructure(pieceStart) {
+    let structureType = Phaser.Math.Between(0, 100);
+    let structureHeight = Phaser.Math.Between(1, 3);
+    
+    if (structureType <= 60) {
+        // Generate blocks
+        for (let i = 0; i < structureHeight; i++) {
+            let block = this.add.tileSprite(pieceStart + platformPiecesWidth, screenHeight - (platformHeight * (i + 1)), 16, 16, 'block').setScale(screenHeight / 345).setOrigin(0, 1);
+            this.blocksGroup.add(block);
+        }
+        return 2;
+    } else if (structureType <= 80) {
+        // Generate mistery blocks
+        let misteryBlock = this.add.sprite(pieceStart + platformPiecesWidth, screenHeight - (platformHeight * 1.5), 'mistery-block').setScale(screenHeight / 345).setOrigin(0, 1);
+        this.misteryBlocksGroup.add(misteryBlock);
+        return 2;
+    } else if (structureType <= 90) {
+        // Generate immovable blocks
+        for (let i = 0; i < structureHeight; i++) {
+            let immovableBlock = this.add.tileSprite(pieceStart + platformPiecesWidth, screenHeight - (platformHeight * (i + 1)), 16, 16, 'immovableBlock').setScale(screenHeight / 345).setOrigin(0, 1);
+            this.immovableBlocksGroup.add(immovableBlock);
+        }
+        return 2;
+    } else {
+        // Generate ground coins
+        let groundCoin = this.add.sprite(pieceStart + platformPiecesWidth, screenHeight - (platformHeight * 1.1), 'ground-coin').setScale(screenHeight / 345).setOrigin(0, 1);
+        this.groundCoinsGroup.add(groundCoin);
+        return 1;
+    }
+}
+
+function setupLevelCollisions() {
+    setupFallProtections.call(this);
+    setupMisteryBlocksCollisions.call(this);
+    setupBlocksCollisions.call(this);
+    setupConstructionBlocksCollisions.call(this);
+    setupImmovableBlocksCollisions.call(this);
+    setupGroundCoinsCollisions.call(this);
+}
+
+function setupFallProtections() {
+    let fallProtections = this.fallProtectionGroup.getChildren();
+    for (let i = 0; i < fallProtections.length; i++) {
+        this.physics.add.existing(fallProtections[i]);
+        fallProtections[i].body.allowGravity = false;
+        fallProtections[i].body.immovable = true;
+    }
+}
+
+function setupMisteryBlocksCollisions() {
+    let misteryBlocks = this.misteryBlocksGroup.getChildren();
+    for (let i = 0; i < misteryBlocks.length; i++) {
+        this.physics.add.existing(misteryBlocks[i]);
+        misteryBlocks[i].body.allowGravity = false;
+        misteryBlocks[i].body.immovable = true;
+        misteryBlocks[i].depth = 2;
+        misteryBlocks[i].anims.play('mistery-block-default', true);
+        this.physics.add.collider(player, misteryBlocks[i], revealHiddenBlock, null, this);
+    }
+}
+
+function setupBlocksCollisions() {
+    let blocks = this.blocksGroup.getChildren();
+    for (let i = 0; i < blocks.length; i++) {
+        this.physics.add.existing(blocks[i]);
+        blocks[i].body.allowGravity = false;
+        blocks[i].body.immovable = true;
+        blocks[i].depth = 2;
+        this.physics.add.collider(player, blocks[i], destroyBlock, null, this);
+    }
+}
+
+function setupConstructionBlocksCollisions() {
+    let constructionBlocks = this.constructionBlocksGroup.getChildren();
+    for (let i = 0; i < constructionBlocks.length; i++) {
+        this.physics.add.existing(constructionBlocks[i]);
+        constructionBlocks[i].isImmovable = true;
+        constructionBlocks[i].body.allowGravity = false;
+        constructionBlocks[i].body.immovable = true;
+        constructionBlocks[i].depth = 2;
+        this.physics.add.collider(player, constructionBlocks[i], destroyBlock, null, this);
+    }
+}
+
+function setupImmovableBlocksCollisions() {
+    let immovableBlocks = this.immovableBlocksGroup.getChildren();
+    for (let i = 0; i < immovableBlocks.length; i++) {
+        this.physics.add.existing(immovableBlocks[i]);
+        immovableBlocks[i].body.allowGravity = false;
+        immovableBlocks[i].body.immovable = true;
+        immovableBlocks[i].depth = 2;
+        this.physics.add.collider(player, immovableBlocks[i]);
+    }
+}
+
+function setupGroundCoinsCollisions() {
+    let groundCoins = this.groundCoinsGroup.getChildren();
+    for (let i = 0; i < groundCoins.length; i++) {
+        this.physics.add.existing(groundCoins[i]);
+        groundCoins[i].anims.play('ground-coin-default', true);
+        groundCoins[i].body.allowGravity = false;
+        groundCoins[i].body.immovable = true;
+        groundCoins[i].depth = 2;
+        this.physics.add.overlap(player, groundCoins[i], collectCoin, null, this);
+    }
+}
+
+function createLevelTriggers() {
     this.startScreenTrigger = this.add.tileSprite(screenWidth, screenHeight - platformHeight, 32, 28, 'horizontal-tube').setScale(screenHeight / 345).setOrigin(1, 1);
     this.startScreenTrigger.depth = 4;
     this.physics.add.existing(this.startScreenTrigger);
@@ -564,85 +754,102 @@ function generateLevel() {
         this.physics.add.collider(player, invisibleWall1);
         this.fallProtectionGroup.add(invisibleWall1);
     }
+}
 
-    let fallProtections = this.fallProtectionGroup.getChildren();
-    for (let i = 0; i < fallProtections.length; i++) {
-        this.physics.add.existing(fallProtections[i]);
-        fallProtections[i].body.allowGravity = false;
-        fallProtections[i].body.immovable = true;
-    }
+// ======================
+// DRAW WORLD
+// ======================
+function drawWorld() {
+    drawBackground.call(this);
+    drawScenery.call(this);
+    drawFinalElements.call(this);
+}
 
-    // Stablish properties for every generated structure
-    let misteryBlocks = this.misteryBlocksGroup.getChildren();
-    for (let i = 0; i < misteryBlocks.length; i++) {
-        this.physics.add.existing(misteryBlocks[i]);
-        misteryBlocks[i].body.allowGravity = false;
-        misteryBlocks[i].body.immovable = true;
-        misteryBlocks[i].depth = 2;
-        misteryBlocks[i].anims.play('mistery-block-default', true);
-        this.physics.add.collider(player, misteryBlocks[i], revealHiddenBlock, null, this);
-    }
-    
-    // Apply player collision with blocks
-    let blocks = this.blocksGroup.getChildren();
-    for (let i = 0; i < blocks.length; i++) {
-        this.physics.add.existing(blocks[i]);
-        blocks[i].body.allowGravity = false;
-        blocks[i].body.immovable = true;
-        blocks[i].depth = 2;
-        this.physics.add.collider(player, blocks[i], destroyBlock, null, this);
-    }
+function drawBackground() {
+    this.add.rectangle(screenWidth, 0, worldWidth, screenHeight, isLevelOverworld ? 0x8585FF : 0x000000).setOrigin(0).depth = -1;
+}
 
-    // Apply player collision with immovable blocks
-    let constructionBlocks = this.constructionBlocksGroup.getChildren();
-    for (let i = 0; i < constructionBlocks.length; i++) {
-        this.physics.add.existing(constructionBlocks[i]);
-        constructionBlocks[i].isImmovable = true;
-        constructionBlocks[i].body.allowGravity = false;
-        constructionBlocks[i].body.immovable = true;
-        constructionBlocks[i].depth = 2;
-        this.physics.add.collider(player, constructionBlocks[i], destroyBlock, null, this);
-    }
+function drawScenery() {
+    let propsY = screenHeight - platformHeight;
 
-    // Apply player collision with immovable blocks
-    let immovableBlocks = this.immovableBlocksGroup.getChildren();
-    for (let i = 0; i < immovableBlocks.length; i++) {
-        this.physics.add.existing(immovableBlocks[i]);
-        immovableBlocks[i].body.allowGravity = false;
-        immovableBlocks[i].body.immovable = true;
-        immovableBlocks[i].depth = 2;
-        this.physics.add.collider(player, immovableBlocks[i]);
-    }
+    if (isLevelOverworld) {
+        // Draw clouds
+        for (let i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 760), Math.trunc(worldWidth / 380)); i++) {
+            let x = generateRandomCoordinate(false, false);
+            let y = Phaser.Math.Between(screenHeight / 80, screenHeight / 2.2);
+            if (Phaser.Math.Between(0, 10) < 5) {
+                this.add.image(x, y, 'cloud1').setOrigin(0).setScale(screenHeight / 1725);
+            } else {
+                this.add.image(x, y, 'cloud2').setOrigin(0).setScale(screenHeight / 1725);
+            }
+        }
 
-    let groundCoins = this.groundCoinsGroup.getChildren();
-    for (let i = 0; i < groundCoins.length; i++) {
-        this.physics.add.existing(groundCoins[i]);
-        groundCoins[i].anims.play('ground-coin-default', true);
-        groundCoins[i].body.allowGravity = false;
-        groundCoins[i].body.immovable = true;
-        groundCoins[i].depth = 2;
-        this.physics.add.overlap(player, groundCoins[i], collectCoin, null, this);
+        // Draw mountains
+        for (let i = 0; i < Phaser.Math.Between(worldWidth / 6400, worldWidth / 3800); i++) {
+            let x = generateRandomCoordinate();
+
+            if (Phaser.Math.Between(0, 10) < 5) {
+                this.add.image(x, propsY, 'mountain1').setOrigin(0, 1).setScale(screenHeight / 517);
+            } else {
+                this.add.image(x, propsY, 'mountain2').setOrigin(0, 1).setScale(screenHeight / 517);
+            }
+        }
+        
+        // Draw bushes
+        for (let i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 960), Math.trunc(worldWidth / 760)); i++) {
+            let x = generateRandomCoordinate();
+
+            if (Phaser.Math.Between(0, 10) < 5) {
+                this.add.image(x, propsY, 'bush1').setOrigin(0, 1).setScale(screenHeight / 609);
+            } else {
+                this.add.image(x, propsY, 'bush2').setOrigin(0, 1).setScale(screenHeight / 609);
+            }
+        }
+
+        // Draw fences
+        for (let i = 0; i < Phaser.Math.Between(Math.trunc(worldWidth / 4000), Math.trunc(worldWidth / 2000)); i++) {
+            let x = generateRandomCoordinate();
+            this.add.tileSprite(x, propsY, Phaser.Math.Between(100, 250), 35, 'fence').setOrigin(0, 1).setScale(screenHeight / 863);
+        }
     }
 }
 
-function startLevel(player, trigger) {
+function drawFinalElements() {
+    let propsY = screenHeight - platformHeight;
 
+    // Final flag mast
+    this.finalFlagMast = this.add.tileSprite(worldWidth - (worldWidth / 30), propsY, 16, 167, 'flag-mast').setOrigin(0, 1).setScale(screenHeight / 400);
+    this.physics.add.existing(this.finalFlagMast);
+    this.finalFlagMast.immovable = true;
+    this.finalFlagMast.allowGravity = false;
+    this.finalFlagMast.body.setSize(3, 167);
+    this.physics.add.overlap(player, this.finalFlagMast, null, raiseFlag, this);
+    this.physics.add.collider(this.platformGroup.getChildren(), this.finalFlagMast);
+
+    // Final flag
+    this.finalFlag = this.add.image(worldWidth - (worldWidth / 30), propsY * 0.93, 'final-flag').setOrigin(0.5, 1);
+    this.finalFlag.setScale(screenHeight / 400);
+
+    // Castle
+    this.add.image(worldWidth - (worldWidth / 75), propsY, 'castle').setOrigin(0.5, 1).setScale(screenHeight / 300);
+}
+
+// ======================
+// GAME FUNCTIONS
+// ======================
+function startLevel(player, trigger) {
     if (!player.body.blocked.right && !trigger.body.blocked.left)
         return;
 
     this.powerDownSound.play();
-
     this.physics.world.setBounds(screenWidth, 0, worldWidth, screenHeight);
-
     applyPlayerInvulnerability.call(this, 4000);
 
     playerBlocked = true;
-
     player.setVelocityX(5);
     player.anims.play('run', true).flipX = false;
 
     this.cameras.main.fadeOut(900, 0, 0, 0);
-
     this.hereWeGoSound.play();
 
     setTimeout(() => {
@@ -660,20 +867,16 @@ function startLevel(player, trigger) {
         updateTimer.call(this);
         this.startScreenTrigger.destroy();
         levelStarted = true;
-        if (this.settingsMenuOpen)hideSettings.call(this);
+        if (this.settingsMenuOpen) hideSettings.call(this);
     }, 1100);
 }
 
-
 function teleportToLevelEnd(player, trigger) {
-
     if (!player.body.blocked.right && !trigger.body.blocked.left)
         return;
     
     playerBlocked = true;
-
     this.cameras.main.stopFollow();
-
     this.powerDownSound.play();
 
     this.tweens.add({
@@ -683,9 +886,7 @@ function teleportToLevelEnd(player, trigger) {
     });
 
     this.cameras.main.fadeOut(450, 0, 0, 0);
-
-    player.anims.play(playerState > 0 ? playerState == 1 ? 'grown-mario-run'  : 'fire-mario-run' : 'run', true).flipX = false;
-
+    player.anims.play(playerState > 0 ? playerState == 1 ? 'grown-mario-run' : 'fire-mario-run' : 'run', true).flipX = false;
     this.undergroundRoof.destroy();
 
     setTimeout(() => {
@@ -696,7 +897,7 @@ function teleportToLevelEnd(player, trigger) {
         this.tpTube.body.allowGravity = false;
         this.tpTube.body.immovable = true;
         this.physics.add.collider(player, this.tpTube);
-        this.add.rectangle(worldWidth - screenWidth, 0, worldWidth, screenHeight,0x8585FF).setOrigin(0).depth = -1;
+        this.add.rectangle(worldWidth - screenWidth, 0, worldWidth, screenHeight, 0x8585FF).setOrigin(0).depth = -1;
         this.add.tileSprite(worldWidth - screenWidth, screenHeight, screenWidth, platformHeight, 'start-floorbricks').setScale(2).setOrigin(0, 0.5).depth = 2;
     }, 500);
 
@@ -718,71 +919,10 @@ function teleportToLevelEnd(player, trigger) {
     }, 1100);
 }
 
-function drawStartScreen() {
-    
-    const screenCenterX = this.cameras.main.worldView.x + this.cameras.main.width / 2;
-
-    // Draw sky
-    this.add.rectangle(0, 0, screenWidth, screenHeight, 0x8585FF).setOrigin(0).depth = -1;
-
-    let platform = this.add.tileSprite(0, screenHeight, screenWidth / 2, platformHeight, 'start-floorbricks').setScale(2).setOrigin(0, 0.5);
-    this.physics.add.existing(platform);
-    platform.body.immovable = true;
-    platform.body.allowGravity = false;
-    // Apply player collision with platform
-    this.physics.add.collider(player, platform);
-
-    /*
-    this.add.text(screenWidth / 2, screenHeight - (screenHeight* 0.9), 
-    "Known bugs: \n. Mobile controls are (at least) not nice",
-    { fontFamily: 'pixel_nums', fontSize: (screenWidth / 115), align: 'left'}).setLineSpacing(screenHeight / 34.5);
-    */
-   
-    this.add.image(screenWidth / 50, screenHeight / 3, 'cloud1').setScale(screenHeight / 1725);
-    this.add.image(screenWidth / 1.25, screenHeight / 2, 'cloud1').setScale(screenHeight / 1725);
-    this.add.image(screenWidth / 1.05, screenHeight / 6.5, 'cloud2').setScale(screenHeight / 1725);
-    this.add.image(screenWidth / 3, screenHeight / 3.5, 'cloud2').setScale(screenHeight / 1725);
-    this.add.image(screenWidth / 2.65, screenHeight / 2.8, 'cloud2').setScale(screenHeight / 1725);
-
-    this.add.image(screenWidth / 50, screenHeight / 3, 'cloud1').setScale(screenHeight / 1725);
-
-    this.add.image(screenWidth / 25, screenHeight / 10, 'sign').setOrigin(0).setScale(screenHeight / 350);
-
-    let propsY = screenHeight - platformHeight;
-
-    this.add.image(screenWidth / 50, propsY, 'mountain2').setOrigin(0, 1).setScale(screenHeight / 517);
-    this.add.image(screenWidth / 300, propsY, 'mountain1').setOrigin(0, 1).setScale(screenHeight / 517);
-
-    this.add.image(screenWidth / 4, propsY, 'bush1').setOrigin(0, 1).setScale(screenHeight / 609);
-    this.add.image(screenWidth / 1.55, propsY, 'bush2').setOrigin(0, 1).setScale(screenHeight / 609);
-    this.add.image(screenWidth / 1.5, propsY, 'bush2').setOrigin(0, 1).setScale(screenHeight / 609);
-
-
-    this.add.tileSprite(screenWidth / 15, propsY, 350, 35, 'fence').setOrigin(0, 1).setScale(screenHeight / 863);
-
-    this.customBlock = this.add.sprite(screenCenterX, screenHeight - (platformHeight * 1.9),'custom-block').setScale(screenHeight / 345);
-    this.customBlock.anims.play('custom-block-default')
-    this.physics.add.collider(player, this.customBlock, function() {
-        if (player.body.blocked.up) showSettings.call(this);
-    }, null, this);
-    this.physics.add.existing(this.customBlock);
-    this.customBlock.body.allowGravity = false;
-    this.customBlock.body.immovable = true;
-
-    this.add.image(screenCenterX, screenHeight - (platformHeight * 1.9), 'gear').setScale(screenHeight / 13000).setInteractive().on('pointerdown', () => showSettings.call(this));
-
-    this.add.image(screenCenterX * 1.12, screenHeight - (platformHeight * 1.5), 'settings-bubble').setScale(screenHeight / 620);
-
-    this.add.sprite(screenCenterX * 1.07, screenHeight - platformHeight, 'npc').setOrigin(0.5, 1).setScale(screenHeight / 365).anims.play('npc-default', true);
-}
-
 function raiseFlag() {
-    if (flagRaised) {
-        return false;
-    }
+    if (flagRaised) return false;
 
     this.cameras.main.stopFollow();
-
     this.timeLeftText.stopped = true;
 
     this.musicTheme.stop();
@@ -802,87 +942,8 @@ function raiseFlag() {
     
     flagRaised = true;
     playerBlocked = true;
-
     addToScore.call(this, 2000, player);
-
     return false;
-}
-
-function consumeMushroom(player, mushroom) {
-    if (gameOver || gameWinned) return;
-
-    this.consumePowerUpSound.play();
-    addToScore.call(this, 1000, mushroom);
-    mushroom.destroy();
-
-    if (playerState > 0 )
-    return;
-
-    playerBlocked = true;
-    this.anims.pauseAll();
-    this.physics.pause();
-    player.setTint(0xfefefe).anims.play('grown-mario-idle');
-    let i = 0;
-    let interval = setInterval(() => {
-        i++;
-        player.anims.play(i % 2 === 0 ? 'grown-mario-idle' : 'idle');
-        if (i > 5) {
-            clearInterval(interval);
-            player.clearTint();
-        }
-    }, 100);
-
-    setTimeout(() => { 
-        this.physics.resume();
-        this.anims.resumeAll();
-        playerBlocked = false;
-        playerState = 1;
-        updateTimer.call(this);
-    }, 1000);
-    //player.body.setSize(16, 32).setOffset(1,0);
-}
-
-function consumeFireflower(player, fireFlower) {
-    if (gameOver || gameWinned) return;
-
-    this.consumePowerUpSound.play();
-    addToScore.call(this, 1000, fireFlower);
-    fireFlower.destroy();
-
-    if (playerState > 1 )
-    return;
-
-    let anim = playerState > 0 ? 'grown-mario-idle' : 'idle';
-
-    playerBlocked = true;
-    this.anims.pauseAll();
-    this.physics.pause();
-
-    player.setTint(0xfefefe).anims.play('fire-mario-idle');
-    let i = 0;
-    let interval = setInterval(() => {
-        i++;
-        player.anims.play(i % 2 === 0 ? 'fire-mario-idle' : anim);
-        if (i > 5) {
-            clearInterval(interval);
-            player.clearTint();
-        }
-    }, 100);
-
-    setTimeout(() => { 
-        this.physics.resume();
-        this.anims.resumeAll();
-        playerBlocked = false;
-        playerState = 2;
-        updateTimer.call(this);
-    }, 1000);
-    //player.body.setSize(16, 32).setOffset(1,0);
-}
-
-function collectCoin(player, coin) {
-    this.coinSound.play();
-    addToScore.call(this, 200);
-    coin.destroy();
 }
 
 function update(delta) {
@@ -901,7 +962,7 @@ function update(delta) {
 
     if (playerVelocityX < 0 && furthestPlayerPos < player.x && levelStarted && !reachedLevelEnd && camera.isFollowing) {
         furthestPlayerPos = player.x;
-        const worldBounds = this.physics.world.setBounds(camera.worldView.x, 0, worldWidth, screenHeight);
+        this.physics.world.setBounds(camera.worldView.x, 0, worldWidth, screenHeight);
         camera.setBounds(camera.worldView.x, 0, worldWidth, screenHeight);
         camera.stopFollow();
         camera.isFollowing = false;
