@@ -1,9 +1,68 @@
 
 var keydownHandler;
 
+function createSettingsCheckbox(scene, x, y, size, checked) {
+    let box = scene.add.rectangle(0, 0, size, size, 0x323232);
+    let checkmark = scene.add.text(0, 0, 'x', {
+        fontFamily: 'pixel_nums',
+        fontSize: size * 0.8,
+        color: '#ffffff'
+    }).setOrigin(0.5);
+    let checkbox = scene.add.container(x, y, [box, checkmark]).setSize(size, size).setInteractive();
+
+    checkbox.checked = checked;
+    checkmark.visible = checked;
+    checkbox.toggleChecked = function() {
+        checkbox.checked = !checkbox.checked;
+        checkmark.visible = checkbox.checked;
+        checkbox.emit('valuechange');
+    };
+    checkbox.on('pointerdown', checkbox.toggleChecked);
+
+    return checkbox;
+}
+
+function createSettingsSlider(scene, x, y, halfWidth, value) {
+    let sliderDot = scene.add.circle(x, y, screenWidth / 115, 0xffffff, 0.75);
+    let slider = {
+        endPoints: [{ x: x - halfWidth, y: y }, { x: x + halfWidth, y: y }],
+        value: value,
+        listeners: []
+    };
+
+    slider.on = function(event, callback) {
+        if (event == 'valuechange') slider.listeners.push(callback);
+    };
+    slider.setValue = function(nextValue) {
+        slider.value = Phaser.Math.Clamp(nextValue, 0, 1);
+        sliderDot.x = slider.endPoints[0].x + (slider.endPoints[1].x - slider.endPoints[0].x) * slider.value;
+        slider.listeners.forEach(callback => callback(slider.value));
+    };
+
+    let dragging = false;
+    let updateFromPointer = function(pointer) {
+        slider.setValue((pointer.x - slider.endPoints[0].x) / (slider.endPoints[1].x - slider.endPoints[0].x));
+    };
+
+    sliderDot.slider = slider;
+    sliderDot.setInteractive(new Phaser.Geom.Circle(0, 0, sliderDot.radius + 12), Phaser.Geom.Circle.Contains);
+    sliderDot.on('pointerdown', function(pointer) {
+        dragging = true;
+        updateFromPointer(pointer);
+    });
+    scene.input.on('pointermove', function(pointer) {
+        if (dragging && pointer.isDown) updateFromPointer(pointer);
+    });
+    scene.input.on('pointerup', function() { dragging = false; });
+    scene.input.on('pointerupoutside', function() { dragging = false; });
+
+    return sliderDot;
+}
+
 function showSettings() {
     if (!this.settingsMenuOpen) {
         this.settingsMenuOpen = true;
+        this.joyStick.setEnabled(false);
         player.anims.play('idle', true);
         playerBlocked = true;
         player.setVelocityX(0);
@@ -23,6 +82,7 @@ function hideSettings() {
     playerBlocked = false;
     applySettings.call(this);
     this.settingsMenuOpen = false;
+    this.joyStick.setEnabled(true);
 }
 
 function drawSettingsMenu() {
@@ -53,11 +113,8 @@ function drawSettingsMenu() {
     settingsText.depth = 5;
     this.settingsMenuObjects.add(settingsText);
 
-    let musicCheckbox = this.add.rexCheckbox(screenWidth / 10, screenHeight / 2.9, screenWidth / 40, screenWidth / 40, {
-        color: 0x323232,
-        checked: localStorage.getItem('music-enabled') == 'true' || localStorage.getItem('music-enabled') == 'false' ? localStorage.getItem('music-enabled') == 'true' : true,
-        animationDuration: 150
-    });
+    let musicCheckbox = createSettingsCheckbox(this, screenWidth / 10, screenHeight / 2.9, screenWidth / 40,
+        localStorage.getItem('music-enabled') == 'true' || localStorage.getItem('music-enabled') == 'false' ? localStorage.getItem('music-enabled') == 'true' : true);
     musicCheckbox.depth = 5;
     this.settingsMenuObjects.add(musicCheckbox);
 
@@ -69,11 +126,8 @@ function drawSettingsMenu() {
     musicCheckboxText.setOrigin(0, 0.4).depth = 5;
     this.settingsMenuObjects.add(musicCheckboxText);
 
-    let effectsCheckbox = this.add.rexCheckbox(screenWidth / 10, screenHeight / 2.3, screenWidth / 40, screenWidth / 40, {
-        color: 0x323232,
-        checked: localStorage.getItem('effects-enabled') == 'true' || localStorage.getItem('effects-enabled') == 'false' ? localStorage.getItem('effects-enabled') == 'true' : true,
-        animationDuration: 150
-    });
+    let effectsCheckbox = createSettingsCheckbox(this, screenWidth / 10, screenHeight / 2.3, screenWidth / 40,
+        localStorage.getItem('effects-enabled') == 'true' || localStorage.getItem('effects-enabled') == 'false' ? localStorage.getItem('effects-enabled') == 'true' : true);
     effectsCheckbox.depth = 5;
     this.settingsMenuObjects.add(effectsCheckbox);
 
@@ -85,19 +139,7 @@ function drawSettingsMenu() {
     effectsCheckboxText.setOrigin(0, 0.4).depth = 5;
     this.settingsMenuObjects.add(effectsCheckboxText);
 
-    let sliderDot = this.add.circle(screenWidth / 5.15, screenHeight / 1.6, screenWidth / 115, 0xffffff, 0.75)
-    sliderDot.slider = this.plugins.get('rexsliderplugin').add(sliderDot, {
-        endPoints: [{
-                x: sliderDot.x - screenWidth / 9.5,
-                y: sliderDot.y
-            },
-            {
-                x: sliderDot.x + screenWidth / 9.5,
-                y: sliderDot.y
-            }
-        ],
-        value: 0.69
-    });
+    let sliderDot = createSettingsSlider(this, screenWidth / 5.15, screenHeight / 1.6, screenWidth / 9.5, 0.69);
     sliderDot.depth = 5;
     this.settingsMenuObjects.add(sliderDot);
 
@@ -119,7 +161,7 @@ function drawSettingsMenu() {
     });
 
     if (localStorage.getItem('volume')) {
-        sliderDot.slider.value = localStorage.getItem('volume') / 100;
+        sliderDot.slider.setValue(localStorage.getItem('volume') / 100);
     }
 
     let separationLine = this.add.graphics();

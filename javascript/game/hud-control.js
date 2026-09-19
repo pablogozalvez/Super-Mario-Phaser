@@ -143,7 +143,7 @@ function gameOverFunc() {
     this.musicTheme.stop();
     this.undergroundMusicTheme.stop();
     this.hurryMusicTheme.stop();
-    this.gameOverSong.play();
+    if (this.gameOverSong) this.gameOverSong.play();
     setTimeout(() => {
         player.depth = 0;
         gameOverScreen.call(this, timeLeft <= 0);

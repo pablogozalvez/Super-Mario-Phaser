@@ -86,6 +86,66 @@ function isMobileDevice() {
     return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
 }
 
+function createVirtualJoystick(scene) {
+    let radius = mobileDevice ? 100 : 0;
+    let base = scene.add.circle(screenWidth * 0.118, screenHeight / 1.68, radius, 0x000000, 0.05).setScrollFactor(0).setDepth(6);
+    let thumb = scene.add.circle(base.x, base.y, mobileDevice ? 25 : 0, 0xcccccc, 0.2).setScrollFactor(0).setDepth(7);
+    let joystick = { up: false, down: false, left: false, right: false, enabled: true };
+    let activePointer = null;
+
+    function reset() {
+        activePointer = null;
+        thumb.setPosition(base.x, base.y);
+        joystick.up = false;
+        joystick.down = false;
+        joystick.left = false;
+        joystick.right = false;
+    }
+
+    function update(pointer) {
+        let deltaX = pointer.x - base.x;
+        let deltaY = pointer.y - base.y;
+        let distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+        let maxDistance = radius - thumb.radius;
+        let scale = distance > maxDistance ? maxDistance / distance : 1;
+
+        thumb.setPosition(base.x + deltaX * scale, base.y + deltaY * scale);
+        joystick.left = deltaX < -20;
+        joystick.right = deltaX > 20;
+        joystick.up = deltaY < -20;
+        joystick.down = deltaY > 20;
+    }
+
+    base.setInteractive(new Phaser.Geom.Circle(0, 0, radius), Phaser.Geom.Circle.Contains);
+    scene.input.on('pointerdown', function(pointer) {
+        if (!joystick.enabled) return;
+        let deltaX = pointer.x - base.x;
+        let deltaY = pointer.y - base.y;
+        if (deltaX * deltaX + deltaY * deltaY <= radius * radius) {
+            activePointer = pointer;
+            update(pointer);
+        }
+    });
+    scene.input.on('pointermove', function(pointer) {
+        if (joystick.enabled && pointer === activePointer && pointer.isDown) update(pointer);
+    });
+    scene.input.on('pointerup', function(pointer) {
+        if (pointer === activePointer) reset();
+    });
+    scene.input.on('pointerupoutside', function(pointer) {
+        if (pointer === activePointer) reset();
+    });
+
+    joystick.setEnabled = function(enabled) {
+        joystick.enabled = enabled;
+        base.setVisible(enabled);
+        thumb.setVisible(enabled);
+        if (!enabled) reset();
+    };
+
+    return joystick;
+}
+
 // Source: https://github.com/photonstorm/phaser3-examples/blob/master/public/src/tilemap/collision/matter%20destroy%20tile%20bodies.js#L35
 
 var SmoothedHorionztalControl = new Phaser.Class({
@@ -155,10 +215,6 @@ function preload() {
     this.load.bitmapFont('carrier_command', 'assets/fonts/carrier_command.png', 'assets/fonts/carrier_command.xml');
 
     // Load plugins
-    this.load.plugin('rexvirtualjoystickplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexvirtualjoystickplugin.min.js', true);
-    this.load.plugin('rexcheckboxplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexcheckboxplugin.min.js', true);
-    this.load.plugin('rexsliderplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexsliderplugin.min.js', true);
-    this.load.plugin('rexkawaseblurpipelineplugin', 'https://raw.githubusercontent.com/rexrainbow/phaser3-rex-notes/master/dist/rexkawaseblurpipelineplugin.min.js', true);
 
     isLevelOverworld = Phaser.Math.Between(0, 100) <= 84;
 
@@ -259,8 +315,8 @@ function initSounds() {
     this.hurryMusicTheme = this.sound.add('hurry-up-music', { volume: 0.15 });
     this.musicGroup.add(this.hurryMusicTheme);
 
-    this.gameOverSong = this.sound.add('gameoversong', { volume: 0.3 });
-    this.musicGroup.add(this.gameOverSong);
+    this.gameOverSong = this.cache.audio.exists('gameoversong') ? this.sound.add('gameoversong', { volume: 0.3 }) : null;
+    if (this.gameOverSong) this.musicGroup.add(this.gameOverSong);
         
     this.winSound = this.sound.add('win', { volume: 0.3 });
     this.musicGroup.add(this.winSound);
@@ -345,16 +401,7 @@ function create() {
 
 function createControls() {
 
-    this.joyStick = this.plugins.get('rexvirtualjoystickplugin').add(this, {
-        x: screenWidth * 0.118,
-        y: screenHeight / 1.68,
-        radius: mobileDevice ? 100 : 0,
-        base: this.add.circle(0, 0, mobileDevice ? 75 : 0, 0x0000000, 0.05),
-        thumb: this.add.circle(0, 0, mobileDevice ? 25 : 0, 0xcccccc, 0.2),
-        // dir: '8dir',   // 'up&down'|0|'left&right'|1|'4dir'|2|'8dir'|3
-        // forceMin: 16,
-        // enable: true
-    });
+    this.joyStick = createVirtualJoystick(this);
 
     // Set control keys
 
